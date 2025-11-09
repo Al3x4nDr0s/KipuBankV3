@@ -193,8 +193,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard {
             revert SwapFailed();
         }
 
-        uint256 after = IERC20(USDC).balanceOf(address(this));
-        uint256 receivedUSDC = after - before;
+        uint256 after_ = IERC20(USDC).balanceOf(address(this));
+        uint256 receivedUSDC = after_ - before;
         if (receivedUSDC == 0) revert SwapFailed();
 
         _creditUSDC(msg.sender, receivedUSDC);
@@ -248,8 +248,8 @@ contract KipuBankV3 is Ownable, ReentrancyGuard {
             revert SwapFailed();
         }
 
-        uint256 after = IERC20(USDC).balanceOf(address(this));
-        uint256 receivedUSDC = after - before;
+        uint256 after_ = IERC20(USDC).balanceOf(address(this));
+        uint256 receivedUSDC = after_ - before;
         if (receivedUSDC == 0) revert SwapFailed();
 
         _creditUSDC(msg.sender, receivedUSDC);
