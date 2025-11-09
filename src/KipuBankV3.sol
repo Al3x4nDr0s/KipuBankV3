@@ -15,11 +15,10 @@ pragma solidity ^0.8.20;
  *      swaps to USDC (Uniswap-compatible)". Permit2 integration is optional.
  */
 
-import "openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
-import "openzeppelin-contracts/token/ERC20/IERC20.sol";
-import "openzeppelin-contracts/access/Ownable.sol";
-import "openzeppelin-contracts/security/ReentrancyGuard.sol";
-//import "chainlink/interfaces/AggregatorV3Interface.sol";
+import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 
@@ -129,6 +128,9 @@ contract KipuBankV3 is Ownable, ReentrancyGuard {
      * @param _bankCapUSDC Global maximum deposits allowed in USDC (6 decimals).
      * @param _txWithdrawalCapUSDC Per-transaction withdrawal cap in USDC (6 decimals).
      */
+
+    using SafeERC20 for IERC20;
+
     constructor(
         address _usdc,
         address _universalRouter,
@@ -136,17 +138,17 @@ contract KipuBankV3 is Ownable, ReentrancyGuard {
         address _priceFeed,
         uint256 _bankCapUSDC,
         uint256 _txWithdrawalCapUSDC
-    ) {
-        require(_usdc != address(0), "USDC 0");
-        require(_universalRouter != address(0), "router 0");
+    ) Ownable(msg.sender) {  // <-- Pass initialOwner here
+    require(_usdc != address(0), "USDC 0");
+    require(_universalRouter != address(0), "router 0");
 
-        USDC = _usdc;
-        universalRouter = IUniversalRouter(_universalRouter);
-        permit2 = IPermit2(_permit2);
-        priceFeed = AggregatorV3Interface(_priceFeed);
-        bankCapUSDC = _bankCapUSDC;
-        transactionWithdrawalCapUSDC = _txWithdrawalCapUSDC;
-    }
+    USDC = _usdc;
+    universalRouter = IUniversalRouter(_universalRouter);
+    permit2 = IPermit2(_permit2);
+    priceFeed = AggregatorV3Interface(_priceFeed);
+    bankCapUSDC = _bankCapUSDC;
+    transactionWithdrawalCapUSDC = _txWithdrawalCapUSDC;
+}
 
     // ---------------------------
     // VIEW HELPERS
