@@ -1,0 +1,244 @@
+/*pragma solidity ^0.8.20;
+
+import "forge-std/Test.sol";
+import "../src/KipuBankV3.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+// Dummy USDC token for testing
+contract MockUSDC is ERC20 {
+    constructor() ERC20("MockUSDC", "USDC") {
+        _mint(msg.sender, 1_000_000e18);
+    }
+}
+
+// Dummy Chainlink price feed
+contract MockPriceFeed is AggregatorV3Interface {
+    int256 public price;
+    uint256 public updatedAt;
+
+    constructor(int256 _price, uint256 _updatedAt) {
+        price = _price;
+        updatedAt = _updatedAt;
+    }
+
+    function decimals() external pure override returns (uint8) { return 8; }
+    function description() external pure override returns (string memory) { return "Mock"; }
+    function version() external pure override returns (uint256) { return 1; }
+    function getRoundData(uint80) external pure override returns (uint80, int256, uint256, uint256, uint80) { revert(); }
+    function latestRoundData() external view override returns (uint80, int256, uint256, uint256, uint80) {
+        return (0, price, 0, updatedAt, 0);
+    }
+}
+
+// Dummy Uniswap router
+contract MockUniswapRouter is IUniswapV2Router02 {
+    address public usdc;
+    constructor(address _usdc) { usdc = _usdc; }
+    function swapExactTokensForTokensSupportingFeeOnTransferTokens(
+        uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline
+    ) external override {
+        // Always send 100 USDC for testing
+        ERC20(usdc).transfer(to, 100e18);
+    }
+    // Unused methods
+    function factory() external pure override returns (address) { return address(0); }
+    function WETH() external pure override returns (address) { return address(0); }
+}
+
+contract KipuBankV3Test is Test {
+    KipuBankV3 kipu;
+    MockUSDC usdc;
+    MockPriceFeed priceFeed;
+    MockUniswapRouter router;
+    address admin = address(this);
+    address user = address(0x123);
+    address user2 = address(0x456);
+
+    function setUp() public {
+        usdc = new MockUSDC();
+        priceFeed = new MockPriceFeed(2000e8, block.timestamp);
+        router = new MockUniswapRouter(address(usdc));
+        kipu = new KipuBankV3(
+            1_000_000e18, // BANK_CAP
+            10_000e18,    // MAX_WITHD_PER_TX
+            address(usdc),
+            address(priceFeed),
+            18,
+            address(router)
+        );
+        kipu.addToWhitelist(user);
+        kipu.addToWhitelist(user2);
+        kipu.grantRole(kipu.DEPOSITOR_ROLE(), user);
+        kipu.grantRole(kipu.WITHDRAWER_ROLE(), user);
+        vm.deal(user, 100 ether);
+        usdc.transfer(user, 1000e18);
+    }
+
+    function testDepositEth() public {
+        vm.prank(user);
+        kipu.depositEth{value: 1 ether}();
+        assertEq(kipu.userEthBalances(user), 1 ether);
+        assertEq(kipu.totalEth(), 1 ether);
+    }
+
+    function testDepositEthZeroReverts() public {
+        vm.prank(user);
+        vm.expectRevert(KipuBankV3.DepositAmountZero.selector);
+        kipu.depositEth{value: 0}();
+    }
+
+    function testDepositEthExceedsCapReverts() public {
+        vm.prank(user);
+        kipu.depositEth{value: 1 ether}();
+        vm.prank(user);
+        vm.expectRevert(KipuBankV3.DepositExceedsBankCap.selector);
+        kipu.depositEth{value: 1_000_000e18}();
+    }
+
+    function testDepositUsdc() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        kipu.depositUsdc(100e18);
+        assertEq(kipu.userUsdcBalances(user), 100e18);
+        assertEq(kipu.totalUsdcDeposits(), 100e18);
+        vm.stopPrank();
+    }
+
+    function testDepositUsdcZeroReverts() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 1e18);
+        vm.expectRevert(KipuBankV3.DepositAmountZero.selector);
+        kipu.depositUsdc(0);
+        vm.stopPrank();
+    }
+
+    function testWithdrawEth() public {
+        vm.prank(user);
+        kipu.depositEth{value: 2 ether}();
+        vm.prank(user);
+        kipu.withdrawEth(1 ether);
+        assertEq(kipu.userEthBalances(user), 1 ether);
+        assertEq(kipu.totalEth(), 1 ether);
+    }
+
+    function testWithdrawEthExceedsLimitReverts() public {
+        vm.prank(user);
+        kipu.depositEth{value: 2 ether}();
+        vm.prank(user);
+        vm.expectRevert(KipuBankV3.WithdrawalExceedsLimit.selector);
+        kipu.withdrawEth(20_000e18);
+    }
+
+    function testWithdrawEthInsufficientBalanceReverts() public {
+        vm.prank(user);
+        kipu.depositEth{value: 1 ether}();
+        vm.prank(user);
+        vm.expectRevert(KipuBankV3.InsufficientUserBalance.selector);
+        kipu.withdrawEth(2 ether);
+    }
+
+    function testWithdrawUsdc() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        kipu.depositUsdc(100e18);
+        kipu.withdrawUsdc(50e18);
+        assertEq(kipu.userUsdcBalances(user), 50e18);
+        vm.stopPrank();
+    }
+
+    function testWithdrawUsdcZeroReverts() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        kipu.depositUsdc(100e18);
+        vm.expectRevert(KipuBankV3.WithdrawalAmountZero.selector);
+        kipu.withdrawUsdc(0);
+        vm.stopPrank();
+    }
+
+    function testWithdrawUsdcInsufficientBalanceReverts() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        kipu.depositUsdc(100e18);
+        vm.expectRevert(KipuBankV3.InsufficientUserBalance.selector);
+        kipu.withdrawUsdc(200e18);
+        vm.stopPrank();
+    }
+
+    function testDepositTokenToUsdc() public {
+        // Use USDC as tokenIn for simplicity
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        address[] memory path = new address[](2);
+        path[0] = address(usdc);
+        path[1] = address(usdc);
+        kipu.depositTokenToUsdc(address(usdc), 100e18, 50e18, path);
+        assertEq(kipu.userUsdcBalances(user), 100e18); // Mock router always sends 100 USDC
+        vm.stopPrank();
+    }
+
+    function testDepositTokenToUsdcZeroReverts() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        address[] memory path = new address[](2);
+        path[0] = address(usdc);
+        path[1] = address(usdc);
+        vm.expectRevert(KipuBankV3.DepositAmountZero.selector);
+        kipu.depositTokenToUsdc(address(usdc), 0, 50e18, path);
+        vm.stopPrank();
+    }
+
+    function testGetUserTotalUsd() public {
+        vm.prank(user);
+        kipu.depositEth{value: 1 ether}();
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        kipu.depositUsdc(100e18);
+        vm.stopPrank();
+        uint256 totalUsd = kipu.getUserTotalUsd(user);
+        // ETH: 1 ether * 2000e8 / 1e26 = 2e-7 USD, USDC: 100e18 * 1e12 = 1e32
+        assertGt(totalUsd, 0);
+    }
+
+    function testAddRemoveWhitelist() public {
+        kipu.addToWhitelist(address(0x999));
+        assertTrue(kipu.whitelist(address(0x999)));
+        kipu.removeFromWhitelist(address(0x999));
+        assertFalse(kipu.whitelist(address(0x999)));
+    }
+
+    function testPauseUnpause() public {
+        kipu.pause();
+        vm.prank(user);
+        vm.expectRevert("Pausable: paused");
+        kipu.depositEth{value: 1 ether}();
+        kipu.unpause();
+        vm.prank(user);
+        kipu.depositEth{value: 1 ether}();
+        assertEq(kipu.userEthBalances(user), 1 ether);
+    }
+
+    function testEmergencyWithdrawEth() public {
+        vm.prank(user);
+        kipu.depositEth{value: 1 ether}();
+        uint256 balBefore = admin.balance;
+        kipu.emergencyWithdraw(address(0), 1 ether);
+        assertEq(admin.balance, balBefore + 1 ether);
+    }
+
+    function testEmergencyWithdrawToken() public {
+        vm.startPrank(user);
+        usdc.approve(address(kipu), 100e18);
+        kipu.depositUsdc(100e18);
+        vm.stopPrank();
+        uint256 balBefore = usdc.balanceOf(admin);
+        kipu.emergencyWithdraw(address(usdc), 100e18);
+        assertEq(usdc.balanceOf(admin), balBefore + 100e18);
+    }
+
+    function testReceiveFallbackReverts() public {
+        (bool ok1, ) = address(kipu).call{value: 1 ether}("");
+        assertFalse(ok1);
+        (bool ok2, ) = address(kipu).call(abi.encodeWithSignature("nonexistent()"));
+        assertFalse(ok2);
+    }
+}*/
