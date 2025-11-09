@@ -9,6 +9,13 @@ import {DeployKipuBankV3} from "../script/DeployKipuBankV3.s.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IUniswapV2Router02} from "v2-periphery/interfaces/IUniswapV2Router02.sol";
 
+/**
+ * @title KipuBankV3Test
+ * @author @lletsica (Test Author)
+ * @notice Test suite for the KipuBankV3 contract using the Forge testing framework.
+ * @dev This contract uses a Sepolia fork to simulate on-chain interactions with live addresses for USDC,
+ * Chainlink Price Feed, and Uniswap V2 Router.
+ */
 contract KipuBankV3Test is Test {
     KipuBankV3 public kipu;
     DeployKipuBankV3 public deployer;
@@ -20,45 +27,64 @@ contract KipuBankV3Test is Test {
     address user = address(0x123);
     address user2 = address(0x456);
     address userAdmin = address(0x789);
+
+    /**
+     * @notice Sets up the initial state for each test.
+     * @dev Forks the blockchain from the RPC defined in the environment variables, deploys the KipuBankV3
+     * contract, sets up initial roles (Admin, Depositor, Withdrawer), and simulates an initial USDC deposit.
+     */
     function setUp() public {
-        // Fork desde el RPC definido en .env
+        // Fork from the RPC defined in .env
         vm.createSelectFork(vm.envString("RPC"));
         deployer = new DeployKipuBankV3();
-        // Desplegar el contrato
+        // Deploy the contract
         kipu = new KipuBankV3(
             100 ether, // _bankCap = 100 ether
             5 ether, // _maxWithdrawalPerTx = 5 ether
             usdc,
             priceFeed,
-            6, // Decimales del token USDC
+            6, // USDC token decimals
             router
         );
 
-        // Configurar permisos
+        // Configure permissions
         kipu.addToWhitelist(user);
         kipu.addToWhitelist(user2);
         kipu.grantRole(kipu.DEPOSITOR_ROLE(), user);
         kipu.grantRole(kipu.WITHDRAWER_ROLE(), user);
         kipu.grantRole(kipu.DEFAULT_ADMIN_ROLE(), userAdmin);
-        // Simular un deposito inicial de USDC por parte de 'user'
-        deal(usdc, user, 1_000 * 10 ** 6); // Asignar 1000 USDC (6 decimales) al usuario
+
+        // Simulate an initial USDC deposit by 'user'
+        deal(usdc, user, 1_000 * 10 ** 6);
+        // Assign 1000 USDC (6 decimals) to the user
         vm.startPrank(user);
-        IERC20(usdc).approve(address(kipu), 100 * 10 ** 6); // Aprobar 100 USDC
-        kipu.depositUsdc(100 * 10 ** 6); // Depositar 100 USDC
+        IERC20(usdc).approve(address(kipu), 100 * 10 ** 6); // Approve 100 USDC
+        kipu.depositUsdc(100 * 10 ** 6);
+        // Deposit 100 USDC
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests that the `getLatestPrice` function returns a price greater than zero.
+     */
     function testGetLatestPrice() public view {
         console.log("testGetLatestPrice");
         int256 price = kipu.getLatestPrice();
         assert(price > 0);
     }
-        
+
+    /**
+     * @notice Tests that depositing a zero amount of ETH reverts with `DepositAmountZero`.
+     */
     function testDepositEthZeroReverts() public {
         vm.startPrank(user);
         vm.expectRevert(KipuBankV3.DepositAmountZero.selector);
         kipu.depositEth{value: 0}();
     }
+
+    /**
+     * @notice Tests that depositing a zero amount of USDC reverts with `DepositAmountZero`.
+     */
     function testDepositUsdcZeroReverts() public {
         vm.startPrank(user);
         IERC20(usdc).approve(address(kipu), 1e18);
@@ -67,6 +93,9 @@ contract KipuBankV3Test is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests the successful addition and removal of an address from the whitelist.
+     */
     function testAddRemoveWhitelist() public {
         kipu.addToWhitelist(address(0x999));
         assertTrue(kipu.whitelist(address(0x999)));
@@ -74,6 +103,9 @@ contract KipuBankV3Test is Test {
         assertFalse(kipu.whitelist(address(0x999)));
     }
 
+    /**
+     * @notice Tests that direct ETH transfers via `receive()` and calls to non-existent functions via `fallback()` revert.
+     */
     function testReceiveFallbackReverts() public {
         console.log("testReceiveFallbackReverts");
         (bool ok1, ) = address(kipu).call{value: 1 ether}("");
@@ -84,133 +116,138 @@ contract KipuBankV3Test is Test {
         assertFalse(ok2);
     }
 
+    /**
+     * @notice Tests the successful deposit of ETH, checking user balance, event emission, and deposit counter.
+     */
     function testDepositEthSuccess() public {
         uint256 depositAmount = 1 ether;
-
-        // Simular el envío de ETH desde el usuario
-        vm.deal(user, depositAmount); // Asignar ETH al usuario
+        // Simulate sending ETH from the user
+        vm.deal(user, depositAmount);
+        // Assign ETH to the user
         vm.startPrank(user);
-
-        // Capturar evento
+        // Capture event
         vm.expectEmit(true, true, false, true);
         emit KipuBankV3.DepositEth(user, depositAmount);
-
-        // Ejecutar el deposito
+        // Execute the deposit
         kipu.depositEth{value: depositAmount}();
-
-        // Verificar balance interno
+        // Verify internal balance
         uint256 userBalance = kipu.userEthBalances(user);
         assertEq(
             userBalance,
             depositAmount,
-            "El balance ETH del usuario debe coincidir"
+            "User's ETH balance must match the deposit amount"
         );
-
-        // Verificar contador de depositos
+        // Verify deposit counter
         assertEq(
             kipu.depositCounter(),
             2,
-            "El contador de depositos debe incrementarse"
+            "The deposit counter must be incremented"
         );
-
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests the successful withdrawal of ETH, checking the contract's internal balance, the user's external balance, event emission, and withdrawal counter.
+     */
     function testWithdrawEthSuccess() public {
         uint256 depositAmount = 2 ether;
         uint256 withdrawAmount = 1 ether;
 
-        // Asignar ETH al usuario y simular deposito previo
+        // Assign ETH to the user and simulate a prior deposit
         vm.deal(user, depositAmount);
         vm.startPrank(user);
         kipu.depositEth{value: depositAmount}();
         vm.stopPrank();
 
-        // Capturar balance previo del usuario
+        // Capture user's balance before withdrawal
         uint256 userBalanceBefore = user.balance;
-
-        // Ejecutar retiro
+        // Execute withdrawal
         vm.startPrank(user);
         vm.expectEmit(true, true, false, true);
         emit KipuBankV3.Withdrawal(user, address(0), withdrawAmount);
         kipu.withdrawEth(withdrawAmount);
         vm.stopPrank();
 
-        // Verificar balance interno del contrato
+        // Verify the contract's internal balance
         uint256 remainingBalance = kipu.userEthBalances(user);
         assertEq(
             remainingBalance,
             depositAmount - withdrawAmount,
-            "El balance ETH interno debe disminuir"
+            "The internal ETH balance must decrease"
         );
-
-        // Verificar que el usuario recibio el ETH
+        // Verify the user received the ETH
         uint256 userBalanceAfter = user.balance;
         assertEq(
             userBalanceAfter,
             userBalanceBefore + withdrawAmount,
-            "El usuario debe recibir el ETH retirado"
+            "The user must receive the withdrawn ETH"
         );
-
-        // Verificar contador de retiros
+        // Verify withdrawal counter
         assertEq(
             kipu.withdrawalCounter(),
             1,
-            "El contador de retiros debe incrementarse"
+            "The withdrawal counter must be incremented"
         );
     }
 
+    /**
+     * @notice Tests the successful withdrawal of USDC, checking the contract's internal USDC balance.
+     */
     function testWithdrawUsdcSuccess() public {
         uint256 depositAmount = 100 * 10 ** 6;
         uint256 withdrawAmount = 40 * 10 ** 6;
 
-        // Asignar USDC y depositar
+        // Assign USDC and deposit
         deal(usdc, user, depositAmount);
         vm.startPrank(user);
         IERC20(usdc).approve(address(kipu), depositAmount);
         kipu.depositUsdc(depositAmount);
         vm.stopPrank();
 
-        // Capturar balance interno antes del retiro
+        // Capture internal balance before withdrawal
         uint256 beforeBalance = kipu.userUsdcBalances(user);
-
-        // Ejecutar retiro
+        // Execute withdrawal
         vm.startPrank(user);
         kipu.withdrawUsdc(withdrawAmount);
         vm.stopPrank();
-
-        // Verificar que el retiro se reflejo correctamente
+        // Verify that the withdrawal was reflected correctly
         uint256 afterBalance = kipu.userUsdcBalances(user);
         assertEq(
             afterBalance,
             beforeBalance - withdrawAmount,
-            "El retiro debe disminuir el balance interno correctamente"
+            "The withdrawal must correctly decrease the internal balance"
         );
     }
 
+    /**
+     * @notice Tests that a `depositTokenToUsdc` swap reverts with `NoUsdcReceived` if the swap yields zero USDC.
+     * @dev This test mocks the Uniswap V2 Router call to simulate the failure condition.
+     */
     function testDepositTokenToUsdcNoUsdcReceivedReverts() public {
         MockToken mock = new MockToken();
         address tokenIn = address(mock);
 
         address[] memory path = new address[](3);
         path[0] = tokenIn;
-        path[1] = WETH; // WETH address definido en setUp
+        path[1] = WETH;
+        // WETH address defined in setUp
         path[2] = usdc;
 
         uint256 depositAmount = 1e6;
-        uint256 minAmountOut = 100 * 10 ** 6; // Esperamos al menos 100 USDC
+        uint256 minAmountOut = 100 * 10 ** 6; // Expect at least 100 USDC
 
-        // **CORRECCIoN CLAVE:** Usar 'deal' para asignar tokens al usuario
-        deal(tokenIn, user, depositAmount); // El usuario tiene el tokenIn necesario
+        // KEY CORRECTION: Use 'deal' to assign tokens to the user
+        deal(tokenIn, user, depositAmount);
+        // The user has the necessary tokenIn
 
-        // 1. Establecer el balance inicial de USDC en el contrato KipuBank
+        // 1. Set the initial USDC balance in the KipuBank contract
         uint256 usdcBefore = 1_000 * 10 ** 6;
         deal(usdc, address(kipu), usdcBefore);
 
         vm.startPrank(user);
         IERC20(tokenIn).approve(address(kipu), depositAmount);
 
-        // 2. Mockear el swap: Simular la llamada al router
+        // 2. Mock the swap: Simulate the call to the router
         vm.mockCall(
             address(kipu.UNISWAP_ROUTER()),
             abi.encodeWithSelector(
@@ -225,99 +262,107 @@ contract KipuBankV3Test is Test {
             ),
             abi.encode()
         );
-
-        // 3. Simular balance después del swap (menor al mínimo)
-        uint256 usdcReceived = minAmountOut - 1;
-        deal(usdc, address(kipu), usdcBefore + usdcReceived); // Simula el resultado NoUsdcReceived
+        // 3. Simulate balance after swap (less than the minimum expected)
+        uint256 usdcReceived = 0; // Simulate zero USDC received
+        deal(usdc, address(kipu), usdcBefore + usdcReceived);
         vm.expectRevert(KipuBankV3.NoUsdcReceived.selector);
         kipu.depositTokenToUsdc(tokenIn, depositAmount, minAmountOut, path);
 
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests that the `ethWeiToUsd` conversion function returns the expected USD value.
+     * @dev Mocks the Chainlink price feed to return a fixed price for calculation verification.
+     */
     function testEthWeiToUsdReturnsExpectedValue() public {
-        // Simular un precio de 2000 USD por ETH (con 8 decimales, como Chainlink)
+        // Simulate a price of 2000 USD per ETH (with 8 decimals, like Chainlink)
         int256 mockPrice = 2000 * 10 ** 8;
         uint80 roundId = 1;
         uint256 updatedAt = block.timestamp;
         bytes memory response = abi.encode(roundId, mockPrice, 0, updatedAt, 0);
-
-        // Mockear el price feed
+        // Mock the price feed
         vm.mockCall(
             address(kipu.PRICE_FEED()),
             abi.encodeWithSelector(kipu.PRICE_FEED().latestRoundData.selector),
             response
         );
-
-        // Llamar a la funcion con 1 ether
+        // Call the function with 1 ether
         uint256 ethAmount = 1 ether;
         uint256 usd = kipu.ethWeiToUsd(ethAmount);
 
         // forge-lint: disable-next-line(unsafe-typecast)
         uint256 expectedUsd = (ethAmount * uint256(mockPrice)) / 1e26;
-
         assertEq(
             usd,
             expectedUsd,
-            "La conversion de ETH a USD debe ser correcta"
+            "The ETH to USD conversion must be correct"
         );
     }
+
+    /**
+     * @notice Tests the ability of the admin to pause and unpause the contract.
+     */
     function testPauseAndUnpause() public {
-        // Verificar que el contrato está activo inicialmente
+        // Verify that the contract is active initially
         assertFalse(
             kipu.paused(),
-            "El contrato no deberia estar pausado al inicio"
+            "The contract should not be paused initially"
         );
-
-        // Pausar el contrato
+        // Pause the contract
         kipu.pause();
-        assertTrue(kipu.paused(), "El contrato deberia estar pausado");
-
-        // Despausar el contrato
+        assertTrue(kipu.paused(), "The contract should be paused");
+        // Unpause the contract
         kipu.unpause();
         assertFalse(
             kipu.paused(),
-            "El contrato deberia estar activo nuevamente"
+            "The contract should be active again"
         );
     }
+
+    /**
+     * @notice Tests that a deposit of USDC reverts when the contract is paused.
+     */
     function testDepositUsdcFailsWhenPaused() public {
         uint256 depositAmount = 50 * 10 ** 6;
-
-        // Asignar USDC al usuario
+        // Assign USDC to the user
         deal(usdc, user, depositAmount);
         vm.startPrank(user);
         IERC20(usdc).approve(address(kipu), depositAmount);
         vm.stopPrank();
-
-        // Pausar el contrato como admin
+        // Pause the contract as admin
         kipu.pause();
-        assertTrue(kipu.paused(), "El contrato debe estar pausado");
-
-        // Intentar depositar USDC y esperar revert
+        assertTrue(kipu.paused(), "The contract must be paused");
+        // Attempt to deposit USDC and expect revert
         vm.startPrank(user);
         vm.expectRevert("Pausable: paused");
         kipu.depositUsdc(depositAmount);
         vm.stopPrank();
     }
-    function testUserAdminCanPauseContract() public {
-        // Asignar rol de admin
-        kipu.grantRole(kipu.DEFAULT_ADMIN_ROLE(), userAdmin);
 
-        // Simular accion como userAdmin
+    /**
+     * @notice Tests that an address with `DEFAULT_ADMIN_ROLE` can pause the contract.
+     */
+    function testUserAdminCanPauseContract() public {
+        // Assign admin role (already done in setUp, but explicitly included for test clarity)
+        kipu.grantRole(kipu.DEFAULT_ADMIN_ROLE(), userAdmin);
+        // Simulate action as userAdmin
         vm.startPrank(userAdmin);
         kipu.pause();
         assertTrue(
             kipu.paused(),
-            "El contrato debe estar pausado por userAdmin"
+            "The contract must be paused by userAdmin"
         );
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests that an admin can successfully perform an emergency withdrawal of USDC.
+     */
     function testUserAdminCanEmergencyWithdrawUsdc() public {
-        // Asignar rol de admin
+        // Assign admin role (already done in setUp, but explicitly included for test clarity)
         kipu.grantRole(kipu.DEFAULT_ADMIN_ROLE(), userAdmin);
-
-        // Asegurar que el contrato tenga USDC
+        // Ensure the contract has USDC
         uint256 depositAmount = 100 * 10 ** 6;
         deal(usdc, user, depositAmount);
         vm.startPrank(user);
@@ -325,23 +370,24 @@ contract KipuBankV3Test is Test {
         kipu.depositUsdc(depositAmount);
         vm.stopPrank();
 
-        // Capturar balance previo de userAdmin
+        // Capture userAdmin's balance before withdrawal
         uint256 balanceBefore = IERC20(usdc).balanceOf(userAdmin);
-
-        // Ejecutar retiro de emergencia
+        // Execute emergency withdrawal
         vm.startPrank(userAdmin);
         kipu.emergencyWithdraw(usdc, depositAmount);
         vm.stopPrank();
-
-        // Verificar que userAdmin recibio los fondos
+        // Verify that userAdmin received the funds
         uint256 balanceAfter = IERC20(usdc).balanceOf(userAdmin);
         assertEq(
             balanceAfter - balanceBefore,
             depositAmount,
-            "userAdmin debe recibir los USDC retirados"
+            "userAdmin must receive the withdrawn USDC"
         );
     }
 
+    /**
+     * @notice Tests that `depositTokenToUsdc` reverts with `InsufficientAllowance` if the user has not approved the bank contract to spend the input token.
+     */
     function testDepositTokenToUsdcFailsWithoutApproval() public {
         address linkToken = address(0x779877A7B0D9E8603169DdbD7836e478b4624789);
         address linkHolder = address(
@@ -349,34 +395,34 @@ contract KipuBankV3Test is Test {
         );
         uint256 linkAmount = 10 * 10 ** 18;
         uint256 minUsdcOut = 1 * 10 ** 6;
-
-        // Asignar permisos y whitelist
+        // Assign permissions and whitelist
         kipu.addToWhitelist(linkHolder);
         kipu.grantRole(kipu.DEPOSITOR_ROLE(), linkHolder);
-        // Impersonar al admin
+        // Impersonate the admin
         vm.startPrank(admin);
         kipu.approveRouterForToken(linkToken);
-        // Impersonar al holder
+        // Impersonate the holder
         vm.startPrank(linkHolder);
-
-        // Asignar LINK al holder
+        // Assign LINK to the holder
         deal(linkToken, linkHolder, linkAmount);
+        // The contract is NOT approved to spend LINK
 
-        // No se aprueba el contrato para gastar LINK
-
-        // Definir el path de swap: LINK → WETH → USDC
+        // Define the swap path: LINK → WETH → USDC
         address[] memory path = new address[](3);
         path[0] = linkToken;
         path[1] = WETH;
         path[2] = usdc;
 
-        // Esperar revert por falta de aprobacion
+        // Expect revert due to lack of approval
         vm.expectRevert(KipuBankV3.InsufficientAllowance.selector);
         kipu.depositTokenToUsdc(linkToken, linkAmount, minUsdcOut, path);
 
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests the allowance logic for `depositTokenToUsdc` by ensuring the user approves the bank and the bank approves the router.
+     */
     function testLinkApprovalForRouter() public {
         address linkToken = address(0x779877A7B0D9E8603169DdbD7836e478b4624789);
         address linkHolder = address(
@@ -384,20 +430,17 @@ contract KipuBankV3Test is Test {
         );
         uint256 linkAmount = 10 * 10 ** 18;
 
-        // Asignar permisos y whitelist
+        // Assign permissions and whitelist
         kipu.addToWhitelist(linkHolder);
         kipu.grantRole(kipu.DEPOSITOR_ROLE(), linkHolder);
 
-        // Impersonar al holder
+        // Impersonate the holder
         vm.startPrank(linkHolder);
-
-        // Asignar LINK al holder
+        // Assign LINK to the holder
         deal(linkToken, linkHolder, linkAmount);
-
-        // Aprobar el contrato para gastar LINK
+        // Approve the contract to spend LINK
         IERC20(linkToken).approve(address(kipu), linkAmount);
-
-        // Verificar que el contrato tiene aprobacion para gastar LINK del usuario
+        // Verify that the contract has approval to spend the user's LINK
         uint256 allowanceToKipu = IERC20(linkToken).allowance(
             linkHolder,
             address(kipu)
@@ -405,15 +448,13 @@ contract KipuBankV3Test is Test {
         assertEq(
             allowanceToKipu,
             linkAmount,
-            "KipuBankV3 debe tener aprobacion para gastar LINK del usuario"
+            "KipuBankV3 must have approval to spend the user's LINK"
         );
-
-        // Simular que el contrato aprueba al router (esto normalmente ocurre dentro de depositTokenToUsdc)
+        // Simulate the contract approving the router (this normally happens inside depositTokenToUsdc)
         vm.stopPrank();
-        vm.startPrank(address(kipu)); // Simular que el contrato aprueba al router
+        vm.startPrank(address(kipu)); // Simulate the contract approving the router
         IERC20(linkToken).approve(router, type(uint256).max);
-
-        // Verificar que el router tiene aprobacion para gastar LINK desde el contrato
+        // Verify that the router has maximum approval to spend LINK from the contract
         uint256 allowanceToRouter = IERC20(linkToken).allowance(
             address(kipu),
             router
@@ -421,62 +462,73 @@ contract KipuBankV3Test is Test {
         assertEq(
             allowanceToRouter,
             type(uint256).max,
-            "El router debe tener aprobacion maxima para gastar LINK desde el contrato"
+            "The router must have maximum approval to spend LINK from the contract"
         );
     }
 
+    /**
+     * @notice Tests the successful emergency withdrawal of ETH by an authorized admin.
+     */
     function testEmergencyWithdrawEthSuccess() public {
         address _admin = user;
         uint256 _amount = 1 ether;
 
-        // Simular que el contrato tiene ETH
+        // Simulate that the contract holds ETH
         vm.deal(address(kipu), _amount);
         uint256 initialBalance = _admin.balance;
 
-        // Asegurar que el caller tiene rol de admin
+        // Ensure the caller has the admin role
         kipu.grantRole(kipu.DEFAULT_ADMIN_ROLE(), _admin);
-
-        // Ejecutar como admin
+        // Execute as admin
         vm.startPrank(_admin);
         kipu.emergencyWithdraw(address(0), _amount);
-
-        // Verificar que el ETH fue transferido correctamente
+        // Verify that ETH was transferred correctly
         assertEq(
             _admin.balance,
             initialBalance + _amount,
-            "El admin debe recibir el ETH"
+            "The admin must receive the ETH"
         );
-        assertEq(address(kipu).balance, 0, "El contrato debe quedar sin saldo");
+        assertEq(address(kipu).balance, 0, "The contract balance should be zero");
     }
 
+    /**
+     * @notice Tests that an emergency withdrawal of ETH reverts if the receiver (admin) is a contract that rejects ETH.
+     */
     function testEmergencyWithdrawEthFails() public {
-        address _receiver = address(0xe839305F80114568D524eb3048bEFA78dcc06Aa0); //sepolia RejectEth contract
+        address _receiver = address(0xe839305F80114568D524eb3048bEFA78dcc06Aa0);
+        // sepolia RejectEth contract
         uint256 _amount = 1 ether;
-
-        // Simular que el contrato tiene ETH
+        // Simulate that the contract holds ETH
         vm.deal(address(kipu), _amount);
-
-        // Asegurar que el caller tiene rol de admin
+        // Ensure the caller has the admin role
         kipu.grantRole(kipu.DEFAULT_ADMIN_ROLE(), address(_receiver));
-
-        // Ejecutar como el contrato que rechaza ETH
+        // Execute as the contract that rejects ETH
         vm.startPrank(address(_receiver));
         vm.expectRevert(KipuBankV3.EthTransferFailed.selector);
         kipu.emergencyWithdraw(address(0), _amount);
     }
 
+    /**
+     * @notice Tests that withdrawing a zero amount of ETH reverts with `WithdrawalAmountZero`.
+     */
     function testWithdrawEthZeroReverts() public {
         vm.startPrank(user);
         vm.expectRevert(KipuBankV3.WithdrawalAmountZero.selector);
         kipu.withdrawEth(0);
     }
 
+    /**
+     * @notice Tests that withdrawing a zero amount of USDC reverts with `WithdrawalAmountZero`.
+     */
     function testWithdrawUsdcZeroReverts() public {
         vm.startPrank(user);
         vm.expectRevert(KipuBankV3.WithdrawalAmountZero.selector);
         kipu.withdrawUsdc(0);
     }
 
+    /**
+     * @notice Tests that depositing ETH exceeding the `BANK_CAP` reverts with `DepositExceedsBankCap`.
+     */
     function testDepositEthExceedsBankCapReverts() public {
         vm.deal(user, 200 ether);
         vm.startPrank(user);
@@ -485,12 +537,19 @@ contract KipuBankV3Test is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests that withdrawing USDC without a sufficient balance reverts with `InsufficientUserBalance`.
+     */
     function testWithdrawUsdcInsufficientBalanceReverts() public {
         vm.startPrank(user);
         vm.expectRevert(KipuBankV3.InsufficientUserBalance.selector);
+        // Attempt to withdraw an amount significantly larger than the initial deposit (100 USDC in setUp)
         kipu.withdrawUsdc(999_999 * 10 ** 6);
     }
 
+    /**
+     * @notice Tests that withdrawing ETH exceeding the `MAX_WITHD_PER_TX` limit reverts with `WithdrawalExceedsLimit`.
+     */
     function testWithdrawEthExceedsLimitReverts() public {
         vm.deal(user, 10 ether);
         vm.startPrank(user);
@@ -505,6 +564,9 @@ contract KipuBankV3Test is Test {
         vm.stopPrank();
     }
 
+    /**
+     * @notice Tests that depositing ETH from a non-whitelisted address reverts with `NotWhitelisted`.
+     */
     function testDepositEthNotWhitelistedReverts() public {
         address unlisted = address(0x999);
         vm.deal(unlisted, 1 ether);
@@ -515,6 +577,9 @@ contract KipuBankV3Test is Test {
         kipu.depositEth{value: 1 ether}();
     }
 
+    /**
+     * @notice Tests that calling `depositTokenToUsdc` with `_tokenIn` as address(0) reverts with `InvalidTokenAddress`.
+     */
     function testDepositTokenToUsdcInvalidTokenAddressReverts() public {
         address[] memory path = new address[](2);
         path[0] = address(0x123);
@@ -524,11 +589,15 @@ contract KipuBankV3Test is Test {
         vm.expectRevert(KipuBankV3.InvalidTokenAddress.selector);
         kipu.depositTokenToUsdc(address(0), 1e18, 1e6, path);
     }
+
+    /**
+     * @notice Tests that calling `depositTokenToUsdc` with an invalid swap path (too short or not ending in USDC) reverts with `InvalidTokenAddress`.
+     */
     function testDepositTokenToUsdcInvalidPathReverts() public {
         address tokenIn = address(new MockToken());
         uint256 amountIn = 1e6;
 
-        // Caso 1: Path vacío o muy corto (< 2)
+        // Case 1: Path is too short (< 2)
         address[] memory pathShort = new address[](1);
         pathShort[0] = tokenIn;
 
@@ -536,7 +605,7 @@ contract KipuBankV3Test is Test {
         vm.expectRevert(KipuBankV3.InvalidTokenAddress.selector);
         kipu.depositTokenToUsdc(tokenIn, amountIn, 1, pathShort);
 
-        // Caso 2: Path no termina en USDC
+        // Case 2: Path does not end in USDC
         address[] memory pathEndsInWeth = new address[](2);
         pathEndsInWeth[0] = tokenIn;
         pathEndsInWeth[1] = WETH;
@@ -545,15 +614,18 @@ contract KipuBankV3Test is Test {
         kipu.depositTokenToUsdc(tokenIn, amountIn, 1, pathEndsInWeth);
         vm.stopPrank();
     }
+
+    /**
+     * @notice Tests that an arbitrary external call to a non-existent function is handled by the `fallback()` function and reverts with `UnsupportedFunction`.
+     */
     function testFallbackRevertsWithUnsupportedFunction() public {
         vm.startPrank(user);
         (bool success, bytes memory data) = address(kipu).call(
             abi.encodeWithSignature("nonexistentFunction()")
         );
+        assertFalse(success, "The call must fail");
 
-        assertFalse(success, "La llamada debe fallar");
-
-        // Verificamos que el revert fue por UnsupportedFunction
+        // Verify that the revert was due to UnsupportedFunction
         bytes4 expectedSelector = KipuBankV3.UnsupportedFunction.selector;
         bytes4 actualSelector;
         assembly {
@@ -562,21 +634,26 @@ contract KipuBankV3Test is Test {
         assertEq(
             actualSelector,
             expectedSelector,
-            "El error debe ser UnsupportedFunction"
+            "The error must be UnsupportedFunction"
         );
     }
 
+    /**
+     * @notice Tests that a direct ETH transfer to the contract's `receive()` function reverts with `UseDepositEth`.
+     */
     function testReceiveRevertsWithUseDepositEth() public {
         vm.deal(user, 1 ether);
         vm.startPrank(user);
-
-        // Esperamos revert con el error personalizado
+        // Expect revert with the custom error
         vm.expectRevert(
             abi.encodeWithSelector(KipuBankV3.UseDepositEth.selector)
         );
         payable(address(kipu)).transfer(1 ether);
     }
 
+    /**
+     * @notice Tests that calling `depositTokenToUsdc` reverts with `InsufficientAllowance` if the user has not approved the bank to spend the tokens.
+     */
     function testDepositTokenToUsdcInsufficientAllowanceReverts() public {
         address token = usdc;
         address[] memory path = new address[](2);
@@ -589,6 +666,9 @@ contract KipuBankV3Test is Test {
         kipu.depositTokenToUsdc(token, 1e6, 1e6, path);
     }
 
+    /**
+     * @notice Tests that the `getLatestPrice` function reverts with `InvalidPrice` if the Chainlink price feed returns an invalid price (e.g., zero).
+     */
     function testGetLatestPriceInvalidReverts() public {
         bytes memory response = abi.encode(0, int256(0), 0, block.timestamp, 0);
         vm.mockCall(
@@ -602,12 +682,13 @@ contract KipuBankV3Test is Test {
         kipu.getLatestPrice();
     }
 
+    /**
+     * @notice Tests the deployment and initialization of the `KipuBankV3` contract, verifying immutable parameters.
+     */
     function testDeployment() public {
         kipu = deployer.run();
-
         // Verify deployment was successful
         assertTrue(address(kipu) != address(0), "KipuBank deployment failed");
-
         // Test initial parameters
         assertEq(
             address(kipu.USDC_TOKEN()),
@@ -624,6 +705,9 @@ contract KipuBankV3Test is Test {
         assertEq(kipu.USDC_DECIMALS(), 6);
     }
 
+    /**
+     * @notice Tests that the constructor reverts with `InvalidTokenAddress` if the USDC address is `address(0)`.
+     */
     function testConstructorUsdcZeroAddressReverts() public {
         vm.expectRevert(KipuBankV3.InvalidTokenAddress.selector);
         new KipuBankV3(
@@ -636,25 +720,26 @@ contract KipuBankV3Test is Test {
         );
     }
 
+    /**
+     * @notice Tests that the `getLatestPrice` function reverts with `StalePrice` if the Chainlink price feed data is older than the staleness threshold (3600 seconds).
+     * @dev Mocks the Chainlink price feed to simulate an outdated update timestamp.
+     */
     function testPriceFeedStaleReverts() public {
         int256 mockPrice = 2000 * 10 ** 8;
-        // Simular que el precio se actualizo hace más de 3600 segundos (1 hora)
+        // Simulate that the price was updated more than 3600 seconds (1 hour) ago
         uint256 staleUpdatedAt = block.timestamp - 3601;
-
         bytes memory response = abi.encode(
             uint80(1),
             mockPrice,
             0,
-            staleUpdatedAt, // Timestamp obsoleto
+            staleUpdatedAt, // Stale Timestamp
             0
         );
-
         vm.mockCall(
             address(kipu.PRICE_FEED()),
             abi.encodeWithSelector(kipu.PRICE_FEED().latestRoundData.selector),
             response
         );
-
         vm.expectRevert(
             abi.encodeWithSelector(
                 KipuBankV3.StalePrice.selector,
@@ -664,5 +749,4 @@ contract KipuBankV3Test is Test {
         );
         kipu.getLatestPrice();
     }
-
 }
